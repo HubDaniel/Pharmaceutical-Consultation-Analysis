@@ -1,0 +1,628 @@
+---
+title: "Final Project"
+author: "Ma.Xiaoran"
+date: "2020/3/7"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r,echo=FALSE}
+library(MASS)
+library(boot)
+library(AER)
+require(pscl)
+library(aod)
+library(faraway)
+library(car)
+```
+
+```{r}
+p <- read.table("pharmacist.txt",header = T)
+str(p)
+summary(p)
+
+## check data consistency
+sum((p$lp+p$fp+p$fr)>1) # data is consistent
+sum((p$ch1+p$ch2)>1) # data is consistent
+
+## combine lp,fp,fr variable and ch variables
+p$insurance <- as.factor(ifelse(p$lp==1,1,ifelse(p$fp==1,2,ifelse(p$fr==1,3,4))))
+p$ch <- as.factor(ifelse(p$ch1==1,1,ifelse(p$ch2==1,2,3)))
+
+
+p2 <- p[,-c(5:7,11,12)]
+str(p2)
+```
+make a table: no missing value. The dependent variable is count; factor: sex, insurance, ch; count: pc, ill, ad; numeric: hs,age, income.
+
+```{r}
+### EDA for each covariates
+attach(p2)
+newtable <- c(table(pc)[1:4],0,0,table(pc)[5:7])
+names(newtable) <- c(0:8)
+x <- barplot(newtable,main = "Number of consultations with a pharmacist in the past 4 weeks",ylim=c(0,450),ylab="Count")
+y <- newtable
+text(x,y+14,labels=as.character(y))
+
+x <- barplot(table(sex),main = "Sex",ylim=c(0,300), names.arg = c("male","female"),ylab="Count")
+y <- table(sex)
+text(x,y+14,labels=as.character(y))
+
+hist(age*100, col="gray", breaks = "Sturges", main="Histogram of Age",xlab = "Age")
+
+hist(income*100000, col="gray", breaks = "Sturges", main="Histogram of Annual Income",xlab = "Income (US dollar)")
+
+x <- barplot(table(ill),main = "Number of illnesses in the past 4 weeks",ylim=c(0,200),ylab="Count",names.arg = c("0","1","2","3","4",">=5"))
+y <- table(ill)
+text(x,y+14,labels=paste(as.character(y)))
+
+x <- barplot(table(ad),main = paste("Number of self-reported days of reduced activity","\nin the past 4 weeks due to illness or injury"),ylab="Count",ylim=c(0,450))
+y <- table(ad)
+text(x,y+14,labels=as.character(y))
+
+hist(hs, col="gray", breaks = "Sturges", main="Histogram of Health Score",xlab = "Health Score")
+
+x <- barplot(table(insurance),main = "Number in Each Type of Insurance",ylim=c(0,250),ylab="Count")
+legend(1.3, 250, legend=c("1: insurance with pharmacy coverage","2: insurance without pharmacy coverage","3: no insurance","4: others"),cex=0.8)
+y <- table(insurance)
+text(x,y+14,labels=as.character(y))
+
+x <- barplot(table(ch),main = "Number in Each Type of chronic medical condition and activity",ylab="Count",ylim=c(0,300))
+legend(1.2, 300, legend=c("1: chronic condition without limit in activity","2: chronic condition with limit in activity","3: others"),cex=0.7)
+y <- table(ch)
+text(x,y+14,labels=as.character(y))
+
+detach(p2)
+```
+
+Change "Number of self-reported days of reduced activity in the past 4 weeks due to illness or injury" variable to be 0-1 where 0: no reduced activity and 1: reduced activity due to illness or injury.
+
+
+
+`##
+Some of the covariates have too many levels (here "level" refers to both the level in categorical variable and count variable/discrete variable) and some levels have too few observations. I combined some of the levels in each independent variable. The reason is that I want to balance between Bias and Variance (in the sence of data science). In other words, if the model has too many explanatory variables, it tends to overfitting, capturing the noise along with the underlying pattern in data (low bias and high variance). If the the model has too few explanatory variables, it may be underfitting, unable to capture the underlying pattern of the data (high bias and low variance). Since our dataset is relatively small (500 observations), too many covariates may lead to overfitting.
+
+In light of covariates, we want each of them to contain as much information of dependent variable as possible. If a covariates is almost a constant, it merely explans the dependent variable. Therefore, for those levels which contains comparatively small number of observations, I combine them together.
+
+In our data, I "remove" some levels of categorical data by combining some of them as one single level. It makes sense because they contain too few observations to be added as explanatory variable.
+`##
+
+```{r}
+### change variables to 0-1
+p3 <- p2
+p3$ad <- ifelse(p3$ad==0,0,1)
+
+x <- barplot(table(p3$ad),main = paste("Number of self-reported days of reduced activity","\nin the past 4 weeks due to illness or injury"),ylab="Count",ylim=c(0,470),names.arg = c("0",">=1"))
+y <- table(p3$ad)
+text(x,y+14,labels=as.character(y))
+
+```
+
+
+```{r}
+### EDA of covariates vs dependent variable
+
+## sex
+pc.sex <- table(p3$pc,p3$sex)
+pc.sex2 <- pc.sex
+# transform count to ratio
+for ( i in 1:ncol(pc.sex)){
+  pc.sex[,i] <- pc.sex[,i]/sum(pc.sex[,i])
+}
+x <- barplot(t(pc.sex),beside = T, main="Number of consultations by sex",legend.text = c("male","female"),ylim=c(0,1.21),ylab="frequency (count)",xlab="number of consultations",args.legend=list(title="Sex"))
+text(x[1,],pc.sex[,1]+0.01,labels=paste(as.character(round(pc.sex[,1],2)),"(",pc.sex2[,1],")"),srt=90,adj=0,cex=0.7)
+text(x[2,],pc.sex[,2]+0.01,labels=paste(as.character(round(pc.sex[,2],2)),"(",pc.sex2[,2],")"),srt=90,adj=0,cex=0.7)
+
+## insurance
+pc.ins <- table(p3$pc,p3$insurance)
+pc.ins2 <- pc.ins
+# transform count to ratio
+for ( i in 1:ncol(pc.ins)){
+  pc.ins[,i] <- pc.ins[,i]/sum(pc.ins[,i])
+}
+x <- barplot(t(pc.ins),beside = T, main="Number of consultations by insurance",legend.text = c("1: insurance with pharmacy coverage","2: insurance without pharmacy coverage","3: no insurance","4: unspecified"),ylim=c(0,1.21),ylab="frequency (count)",xlab="number of consultations",args.legend=list(title="Type of insurance"))
+text(x[1,],pc.ins[,1]+0.01,labels=paste(as.character(round(pc.ins[,1],2)),"(",pc.ins2[,1],")"),srt=90,adj=0,cex=0.7)
+text(x[2,],pc.ins[,2]+0.01,labels=paste(as.character(round(pc.ins[,2],2)),"(",pc.ins2[,2],")"),srt=90,adj=0,cex=0.7)
+text(x[3,],pc.ins[,3]+0.01,labels=paste(as.character(round(pc.ins[,3],2)),"(",pc.ins2[,3],")"),srt=90,adj=0,cex=0.7)
+text(x[4,],pc.ins[,4]+0.01,labels=paste(as.character(round(pc.ins[,4],2)),"(",pc.ins2[,4],")"),srt=90,adj=0,cex=0.7)
+
+## illness
+pc.ill <- table(p3$pc,p3$ill)
+pc.ill2 <- pc.ill
+# transform count to ratio
+for ( i in 1:ncol(pc.ill)){
+  pc.ill[,i] <- pc.ill[,i]/sum(pc.ill[,i])
+}
+x <- barplot(t(pc.ill),beside = T, main="Number of consultations by number of illness",ylim=c(0,1.21),ylab="frequency (count)",xlab="number of consultations",legend.text = c("0 illness","1 illness","2 illness","3 illness","4 illness","5 illness"),args.legend=list(title="Number of illness"))
+text(x[1,],pc.ill[,1]+0.01,labels=paste(as.character(round(pc.ill[,1],2)),"(",pc.ill2[,1],")"),srt=90,adj=0,cex=0.7)
+text(x[2,],pc.ill[,2]+0.01,labels=paste(as.character(round(pc.ill[,2],2)),"(",pc.ill2[,2],")"),srt=90,adj=0,cex=0.7)
+text(x[3,],pc.ill[,3]+0.01,labels=paste(as.character(round(pc.ill[,3],2)),"(",pc.ill2[,3],")"),srt=90,adj=0,cex=0.7)
+text(x[4,],pc.ill[,4]+0.01,labels=paste(as.character(round(pc.ill[,4],2)),"(",pc.ill2[,4],")"),srt=90,adj=0,cex=0.7)
+text(x[5,],pc.ill[,5]+0.01,labels=paste(as.character(round(pc.ill[,5],2)),"(",pc.ill2[,5],")"),srt=90,adj=0,cex=0.7)
+text(x[6,],pc.ill[,6]+0.01,labels=paste(as.character(round(pc.ill[,6],2)),"(",pc.ill2[,6],")"),srt=90,adj=0,cex=0.7)
+
+## self report days
+pc.ad <- table(p3$pc,p3$ad)
+pc.ad2 <- pc.ad
+# transform count to ratio
+for ( i in 1:ncol(pc.ad)){
+  pc.ad[,i] <- pc.ad[,i]/sum(pc.ad[,i])
+}
+x <- barplot(t(pc.ad),beside = T, main="Num of consultations by Num of self-reported days of reduced activity",legend.text = c("self report: 0 days","self report: >=1 days"),ylim=c(0,1.21),ylab="frequency (count)",xlab="number of consultations",args.legend=list(title="Number of days reported"))
+text(x[1,],pc.ad[,1]+0.01,labels=paste(as.character(round(pc.ad[,1],2)),"(",pc.ad2[,1],")"),srt=90,adj=0,cex=0.7)
+text(x[2,],pc.ad[,2]+0.01,labels=paste(as.character(round(pc.ad[,2],2)),"(",pc.ad2[,2],")"),srt=90,adj=0,cex=0.7)
+
+## ch
+pc.ch <- table(p3$pc,p3$ch)
+pc.ch2 <- pc.ch
+# transform count to ratio
+for ( i in 1:ncol(pc.ch)){
+  pc.ch[,i] <- pc.ch[,i]/sum(pc.ch[,i])
+}
+x <- barplot(t(pc.ch),beside = T, main="Num of consultations by type of medical conditions",legend.text = c("chronic condition without limit in activity","chronic condition with limit in activity","no chronic condition"),ylim=c(0,1.21),ylab="frequency (count)",xlab="number of consultations",args.legend=list(title="Type of medical conditions"))
+text(x[1,],pc.ch[,1]+0.01,labels=paste(as.character(round(pc.ch[,1],2)),"(",pc.ch2[,1],")"),srt=90,adj=0,cex=0.7)
+text(x[2,],pc.ch[,2]+0.01,labels=paste(as.character(round(pc.ch[,2],2)),"(",pc.ch2[,2],")"),srt=90,adj=0,cex=0.7)
+text(x[3,],pc.ch[,3]+0.01,labels=paste(as.character(round(pc.ch[,3],2)),"(",pc.ch2[,3],")"),srt=90,adj=0,cex=0.7)
+
+## income
+plot(p3$pc,p3$income*100000, main="Num of consultations vs Annual Income", ylab="Annual Income",xlab="Number of consultations")
+
+## age
+plot(p3$pc,p3$age*100, main="Num of consultations vs Age", ylab="Age",xlab="Number of consultations")
+
+## score
+plot(p3$pc,p3$hs, main="Num of consultations vs Health Score", ylab="Health Score",xlab="Number of consultations")
+
+
+```
+
+vs sex: It can be seen that sex may have influence on our dependent variable since female tend to have more consultations than male.
+
+vs insurance: It can be seen that the majority of those who did not have a consultation have insurance with pharmacy coverage. The number of consultations varies among these 4 groups of people which indicates that the type of insurance could be an influential covariate.
+
+vs num of illness: Number of consultations also differs among different number of illness.
+
+vs self report days: significant difference between 0 days and at least 1 days.
+
+vs ch: similar pattern occurs at 0 consultations and 1 consultations.
+
+For number of consultations vs continuous variables, it is hard to do EDA directly, rather, I split continuous variables into different chunks and do barplots.
+
+
+```{r}
+## split numerical values
+
+## income
+income <- cut(p3$income,3,labels = FALSE)
+pc.inc <- table(p3$pc,income)
+pc.inc2 <- pc.inc
+# transform count to ratio
+for ( i in 1:ncol(pc.inc)){
+  pc.inc[,i] <- pc.inc[,i]/sum(pc.inc[,i])
+}
+x <- barplot(t(pc.inc),beside = T, main="Number of consultations by income",legend.text = c("1: 0~50,000","2: 50,000~100,000","3: 100,000~150,000"),ylim=c(0,1.21),ylab="frequency (count)",xlab="number of consultations",args.legend=list(title="Income Segments (USD)"))
+text(x[1,],pc.inc[,1]+0.01,labels=paste(as.character(round(pc.inc[,1],2)),"(",pc.inc2[,1],")"),srt=90,adj=0,cex=0.7)
+text(x[2,],pc.inc[,2]+0.01,labels=paste(as.character(round(pc.inc[,2],2)),"(",pc.inc2[,2],")"),srt=90,adj=0,cex=0.7)
+text(x[3,],pc.inc[,3]+0.01,labels=paste(as.character(round(pc.inc[,3],2)),"(",pc.inc2[,3],")"),srt=90,adj=0,cex=0.7)
+
+
+## age
+age <- cut(p3$age,3,labels = FALSE)
+pc.age <- table(p3$pc,age)
+pc.age2 <- pc.age
+# transform count to ratio
+for ( i in 1:ncol(pc.age)){
+  pc.age[,i] <- pc.age[,i]/sum(pc.age[,i])
+}
+x <- barplot(t(pc.age),beside = T, main="Number of consultations by age",legend.text = c("1: 19~36","2: 36~54","3: 54~72"),ylim=c(0,1.21),ylab="frequency (count)",xlab="number of consultations",args.legend=list(title="Age Segments"))
+text(x[1,],pc.age[,1]+0.01,labels=paste(as.character(round(pc.age[,1],2)),"(",pc.age2[,1],")"),srt=90,adj=0,cex=0.7)
+text(x[2,],pc.age[,2]+0.01,labels=paste(as.character(round(pc.age[,2],2)),"(",pc.age2[,2],")"),srt=90,adj=0,cex=0.7)
+text(x[3,],pc.age[,3]+0.01,labels=paste(as.character(round(pc.age[,3],2)),"(",pc.age2[,3],")"),srt=90,adj=0,cex=0.7)
+
+## score
+score <- cut(p3$hs,3,labels = FALSE)
+pc.sco <- table(p3$pc,score)
+pc.sco2 <- pc.sco
+# transform count to ratio
+for ( i in 1:ncol(pc.sco)){
+  pc.sco[,i] <- pc.sco[,i]/sum(pc.sco[,i])
+}
+x <- barplot(t(pc.sco),beside = T, main="Number of consultations by health score",legend.text = c("1: 0~4","2: 4~8","3: 8~12"),ylim=c(0,1.21),ylab="frequency (count)",xlab="number of consultations",args.legend=list(title="Health Score Segments"))
+text(x[1,],pc.sco[,1]+0.01,labels=paste(as.character(round(pc.sco[,1],2)),"(",pc.sco2[,1],")"),srt=90,adj=0,cex=0.7)
+text(x[2,],pc.sco[,2]+0.01,labels=paste(as.character(round(pc.sco[,2],2)),"(",pc.sco2[,2],")"),srt=90,adj=0,cex=0.7)
+text(x[3,],pc.sco[,3]+0.01,labels=paste(as.character(round(pc.sco[,3],2)),"(",pc.sco2[,3],")"),srt=90,adj=0,cex=0.7)
+```
+
+
+We can also find out possible relationships by comparing conditional mean and conditional standard deviation.
+
+```{r}
+with (p3, tapply(pc,sex,function(x){
+  paste("Mean is: ", round(mean(x),4), ", var is: ",round(var(x),4))
+}))
+
+with (p3, tapply(pc,ch,function(x){
+  paste("Mean is: ", round(mean(x),4), ", var is: ",round(var(x),4))
+}))
+```
+
+
+The table above shows the average numbers of
+consultation by different categorical variables and seems to suggest that number of each of them is a good candidate for predicting the number of consultation, our outcome variable, because the mean value of the outcome appears to vary by those covariates. The variances within each value of those categorical variables are higher than the means within each value. These are the conditional means and variances. These differences suggest that over-dispersion is present and that a Negative Binomial model would be appropriate.
+
+
+From all the EDA above, it is hard to rule out any of those covariates. So let's fit the model with all the covariates included.
+
+$$
+Y_{i} \stackrel{indep}{\sim} \text{Poisson} (\mu_i) \text{ for } i\in \text{{1,...,500}} \text{ with } \mu_i=E(Y_i)
+$$
+
+
+
+```{r}
+### poisson diagnostics
+diagFun <- function(fittedModel){
+  
+  # should be constant variance since deviance residuals have divided by V(mu)
+  plot(residuals(fittedModel)~predict(fittedModel,type="link"),xlab=expression(hat(eta)),ylab="Deviance residuals")
+  
+
+  
+  
+  # not constant variance indicates overdispersion
+  plot(residuals(fittedModel,type="response")~predict(fittedModel,type="link"),xlab=expression(hat(eta)),ylab="Response residuals")
+  
+  # half normal plot
+  halfnorm(residuals(fittedModel))
+  #The half-normal plot of the (absolute value of the) residuals shown in Figure 5.3
+  #shows no outliers.
+  
+  # mean is equal to the variance?
+  plot(log(fitted(fittedModel)),log((p3$pc-fitted(fittedModel))^2),xlab=expression(hat(mu)),ylab=expression((y-hat(mu))^2))
+  abline(0,1)
+  
+  ### over-dispersion: est with pearson X square / df
+  rp <- residuals(fittedModel, type = "pearson")
+  rraw <- residuals(fittedModel, type = "response")
+  phi <- sum(rp^2)/fittedModel$df.res
+  
+  ### over-dispersion: est with deviance / df
+  phi2 <- fittedModel$deviance/fittedModel$df.res
+  
+  ### over-dispersion: dispersion test
+  dispersiontest(fittedModel)
+  
+  ### Goodness of fit test
+  g <- pchisq(fittedModel$deviance, df=fittedModel$df.residual, lower.tail=FALSE)
+  
+  ### return over-dispersion result
+  result <- data.frame(estimated_phi_pearson=phi,estimated_phi_deviance=phi2,dispersion_test_p=dispersiontest(fittedModel)$p, Goodness=g)
+  #result <- data.frame(estimated_phi_pearson=phi,estimated_phi_deviance=phi2, Goodness=g)
+  return(result)
+}
+
+
+```
+
+
+
+
+```{r}
+curve(-sqrt(exp(x)-1),ylab="f(x)")
+plot(residuals(fit3)~predict(fit3,type="response"),xlab=expression(hat(mu)),ylab="Deviance residuals")
+```
+
+Model Fitting
+
+1. Fit on all covariates
+```{r}
+fit1 <- glm(pc ~., family = poisson, data = p3)
+summary(fit1)
+diagFun(fit1)
+outlierTest(fit1)
+```
+
+It's normal that the residual plot is hard to judge with many zeros
+
+```{r}
+# ## simulation small mu
+# df <- data.frame(x0=0.01,x1=seq(0,1,by = 0.01))
+# df$mu <- df$x0+df$x1
+# myvec <- rpois(nrow(df),df$mu)
+# df$y <- myvec
+# simfit <- glm(y~x1,data=df,family = "poisson")
+# summary(simfit)
+# diagFun(simfit)
+```
+
+
+```{r}
+# ## simulation large mu
+# df <- data.frame(x0=2,x1=seq(0,10,by = 0.1))
+# df$mu <- df$x0+df$x1
+# myvec <- rpois(nrow(df),df$mu)
+# df$y <- myvec
+# simfit <- glm(y~x1,data=df,family = "poisson")
+# summary(simfit)
+# diagFun(simfit)
+```
+
+want to remove insignificant covariates. But before that, do tests to double check. Especially for categorical variable, one level insignificance does not necessarily indicate an overall insignificance.
+
+Since our tests are approximated tests, I will use different tests results and combine their results to make the decision.
+
+If the mean structure is specified correctly, the first plot should show no dependence of the size or sign of the residual on the value of the linear predictor. If the response is Poisson, then the squared raw residual should be on average equal to the mean (because it¡¯s an estimate for the variance, and variance equals mean for Poisson distribution).
+
+```{r}
+## test income (insignificant)
+wald.test(b=coef(fit1),Sigma = vcov(fit1),Terms = 4)
+
+fit1.2 <- update(fit1,pc ~ .-income)
+anova(fit1.2,fit1,test="Chi")
+
+## test insurance (significant)
+wald.test(b=coef(fit1),Sigma = vcov(fit1),Terms = 8:10) # only test 8 or 10 is exactly the same as in summary
+
+fit1.2 <- update(fit1,pc ~ .-insurance)
+anova(fit1.2,fit1,test="Chi")
+
+## test ch (significant)
+wald.test(b=coef(fit1),Sigma = vcov(fit1),Terms = 11:12)
+
+fit1.2 <- update(fit1,pc ~ .-ch)
+anova(fit1.2,fit1,test="Chi")
+
+```
+
+
+2. Remove income variable
+```{r}
+fit2 <- update(fit1,pc~.-income)
+summary(fit2)
+diagFun(fit2)
+```
+
+Again, check significance of coefficients
+```{r}
+## test insurance (significant)
+wald.test(b=coef(fit2),Sigma = vcov(fit2),Terms = 7:9) # only test 8 or 10 is exactly the same as in summary
+
+fit2.2 <- update(fit2,pc ~ .-insurance)
+anova(fit2.2,fit2,test="Chi")
+
+## test ch (significant)
+wald.test(b=coef(fit2),Sigma = vcov(fit2),Terms = 10:11)
+
+fit2.2 <- update(fit2,pc ~ .-ch)
+anova(fit2.2,fit1,test="Chi")
+
+```
+
+Then test model goodness-of-fit and possible overdispersion:
+
+It is included in the diagnostics. It's good.
+
+Notice that each time remove some covariates, the significance of other covariates may change a lot. May indicate interaction.
+
+
+Do we need higher order terms?
+```{r}
+# age
+parresi <- residuals(fit2.2,type="partial")
+plot(p3$age,parresi[,2],ylab="partial residuals")
+lines(smooth.spline(p3$age,parresi[,2]))
+
+#ill
+parresi <- residuals(fit2.2,type="partial")
+plot(p3$ill,parresi[,3],ylab="partial residuals")
+lines(smooth.spline(p3$ill,parresi[,3]))
+
+#hs
+parresi <- residuals(fit2.2,type="partial")
+plot(p3$hs,parresi[,5],ylab="partial residuals")
+lines(smooth.spline(p3$hs,parresi[,5]))
+
+```
+
+
+
+3. High order terms
+```{r}
+fit3 <- stepAIC(fit1,~.^2,trace=F)
+summary(fit3)
+diagFun(fit3)
+outlierTest(fit3)
+```
+
+
+
+
+remove insignificant covariates
+```{r}
+## visualization
+interaction.plot(p3$ch, cut(p3$income,3), p3$pc,ylab="mean value of number of consultations",xlab="Type of medical conditions",legend =F,main="interaction plot: medical conditions + income")        # yes
+legend("topright",legend = c("0~50,000","50,000~100,000","100,000~150,000"),lty = c(3,2,1),title = "Segments of income (USD)",cex=0.8)
+
+interaction.plot(p3$insurance, cut(p3$hs,3), p3$pc,ylab="mean value of number of consultations",xlab="Type of insurance",legend =F,main="interaction plot: type of insurance + health score")     # yes
+legend("topright",legend = c("0~4","4~8","8~12"),lty = c(3,2,1),title = "Segments of health score",cex=0.8)
+
+interaction.plot(p3$insurance, p3$ad, p3$pc,ylab="mean value of number of consultations",xlab="Type of insurance",legend =F,main="interaction plot: type of insurance + days of reduced activity")            # maybe
+legend(1.35,1.3,legend = c("self-reported days: 0","self-reported days: >=1"),lty = c(2,1),title = "Segments of days of Reduced Activity",cex=0.8)
+
+interaction.plot( p3$ad,cut(p3$age,3), p3$pc,ylab="mean value of number of consultations",xlab="Self-reported days of reduced activity",legend =F,main="interaction plot: days of reduced activity + age")           # no
+legend("topleft",legend = c("19~36","36~54","54~72"),lty = c(2,1),title = "Segments of age",cex=0.8)
+
+interaction.plot(cut(p3$age,3), cut(p3$hs,3), p3$pc)    # yes
+interaction.plot(cut(p3$ill,3), cut(p3$hs,3), p3$pc)    # yes
+interaction.plot(p3$ch, p3$ad, p3$pc)                   # no
+interaction.plot(p3$ch, cut(p3$ill,3), p3$pc)           # no
+
+# remove
+fit3.2 <- update(fit3~.-ad:ch-ill:ch-age:ad-ad:pc)
+summary(fit3.2)
+# embedded test
+anova(fit3,fit3.2,test="Chi")
+```
+
+```{r}
+### poisson diagnostics
+diagFun <- function(fittedModel){
+  
+  # should be constant variance since deviance residuals have divided by V(mu)
+  plot(residuals(fittedModel)~predict(fittedModel,type="link"),xlab=expression(hat(eta)),ylab="Deviance residuals",main="deviance residual versus estimated systematic component")
+  
+  # not constant variance indicates overdispersion
+  plot(residuals(fittedModel,type="response")~predict(fittedModel,type="link"),xlab=expression(hat(eta)),ylab="Response residuals")
+  
+  # half normal plot
+  halfnorm(residuals(fittedModel))
+  #The half-normal plot of the (absolute value of the) residuals shown in Figure 5.3
+  #shows no outliers.
+  
+  # mean is equal to the variance?
+  plot(log(fitted(fittedModel)),log((p3$pc-fitted(fittedModel))^2),xlab=expression(hat(mu)),ylab=expression((y-hat(mu))^2),main="squared raw residual versus estimated mean")
+  abline(0,1)
+  
+  ### over-dispersion: est with pearson X square / df
+  rp <- residuals(fittedModel, type = "pearson")
+  rraw <- residuals(fittedModel, type = "response")
+  phi <- sum(rp^2)/fittedModel$df.res
+  
+  ### over-dispersion: est with deviance / df
+  phi2 <- fittedModel$deviance/fittedModel$df.res
+  
+  ### over-dispersion: dispersion test
+  dispersiontest(fittedModel)
+  
+  ### Goodness of fit test
+  g <- pchisq(fittedModel$deviance, df=fittedModel$df.residual, lower.tail=FALSE)
+  
+  ### return over-dispersion result
+  result <- data.frame(estimated_phi_pearson=phi,estimated_phi_deviance=phi2,dispersion_test_p=dispersiontest(fittedModel)$p, Goodness=g)
+  #result <- data.frame(estimated_phi_pearson=phi,estimated_phi_deviance=phi2, Goodness=g)
+  return(result)
+}
+```
+
+```{r}
+diagFun(fit3.2)
+glm.diag.plots(fit3.2)
+
+glmD <- glm.diag(fit3.2)
+plot(glmD$h/(1-glmD$h),glmD$cook,main="Cook's Distance VS Leverage Value", xlab="Leverage Value",ylab="Cook's Distance")
+points(y=max(glmD$cook),x=glmD$h[which.max(glmD$cook)]/(1-glmD$h[which.max(glmD$cook)]),col="red")
+text(y=max(glmD$cook)-0.05,x=glmD$h[which.max(glmD$cook)]/(1-glmD$h[which.max(glmD$cook)]),col="red",labels = which.max(glmD$cook))
+
+outlierTest(fit3.2)
+```
+
+```{r}
+# partial residual plot
+# age
+parresi <- residuals(fit3.2,type="partial")
+plot(p3$age,parresi[,2],ylab="partial residuals",main="Partial Residual Plot for Age")
+lines(smooth.spline(p3$age,parresi[,2]))
+
+#ill
+parresi <- residuals(fit3.2,type="partial")
+plot(p3$ill,parresi[,3],ylab="partial residuals",main="Partial Residual Plot for Number of illness")
+lines(smooth.spline(p3$ill,parresi[,3]))
+
+#hs
+parresi <- residuals(fit3.2,type="partial")
+plot(p3$hs,parresi[,5],ylab="partial residuals",main="Partial Residual Plot for Health Score")
+lines(smooth.spline(p3$hs,parresi[,5]))
+```
+
+```{r}
+# use simulation to see whether our model describe the data well
+predmu <- predict(fit3.2,type="response")
+set.seed(111)
+simulate <- rpois(length(predmu),predmu)
+
+newtable2 <- c(table(simulate),0)
+names(newtable2) <- 0:8
+x <- barplot(newtable2,main = "Simulated Number of consultations with a pharmacist in the past 4 weeks",ylim=c(0,450),ylab="Count")
+y <- newtable2
+text(x,y+14,labels=as.character(y))
+```
+
+```{r}
+simulatedf <- data.frame(pc = c(p3$pc,simulate),sim = rep(c(0,1),each=500))
+newtable3 <- table(simulatedf)
+
+x <- barplot(t(newtable3),beside = T, main="Simulated vs Original Number of consultations",legend.text = c("simulated","original"),ylim=c(0,450),ylab="count",xlab="number of consultations")
+text(x[1,],newtable3[,1]+19,labels=as.character(newtable3[,1]),srt=90)
+text(x[2,],newtable3[,2]+19,labels=as.character(newtable3[,2]),srt=90)
+
+
+
+
+# fit the same model and see the residual plots
+p4 <- p3
+p4$pc <- simulate
+fitsim <- glm(pc ~ sex + age + income + ill + ad + hs + insurance + ch + income:ch + hs:insurance + ad:insurance + age:hs + ill:hs, family = "poisson", data = p4)
+summary(fitsim)
+diagFun(fitsim)
+outlierTest(fitsim)
+```
+
+```{r}
+# bootstrap regression
+
+for (i in 1:1000){
+
+  simulate <- rpois(length(predmu),predmu)
+  psim <- p3
+  psim$pc <- simulate
+  fitsim <- glm(pc ~ sex + age + income + ill + ad + hs + insurance + ch + income:ch + hs:insurance + ad:insurance + age:hs + ill:hs, family = "poisson", data = psim)
+  if (i == 1){
+    result <- fitsim$coefficients 
+  }
+  result <- rbind(result,fitsim$coefficients)
+  
+}
+
+## find 95% quantile
+qdf <- data.frame("0.95lower"=rep(NA,22),"0.95upper"=NA)
+for(i in 1:ncol(result)){
+  q <- quantile(result[,i],probs=c(0.025,0.975))
+  qdf[i,1] <- q[1]
+  qdf[i,2] <- q[2]
+}
+qdf$est <- fit3.2$coefficients
+qdf$`in` <- ifelse((qdf$est>qdf$X0.95lower)&(qdf$est<qdf$X0.95upper),"yes","no")
+qdf
+
+## visualize
+for (i in 1:ncol(result)){
+  hist(result[,i],main = paste("Histogram of bootstrap estimation on ",colnames(result)[i]),xlab=colnames(result)[i])
+  abline(v = fit3.2$coefficients[i],col="red")
+}
+
+```
+
+
+fit3.2 is our final model
+```{r}
+#estimate the first person's probability that his/her number of pharmacist consultations equals 0,1,2, etc.
+# find out the mu for his/her poisson distribution
+firstmu <- predict(fit3.2,type="response")[1]
+data.frame(NumOfCon=0:8,Prob=round(dpois(0:8,firstmu),10))
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+

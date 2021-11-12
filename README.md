@@ -13,5 +13,8 @@ Description of variables is in the report.
 
 • Clearly state and discuss model(s) and assumptions, and also the limitations of analysis in the context of this study. 
 
+### Data:
+The data used is only for the course project and does not represent the true survey data. It is also not included here.
+
 ### Details:
 Please see the report for a detailed analysis.
